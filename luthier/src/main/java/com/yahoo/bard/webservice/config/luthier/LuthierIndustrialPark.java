@@ -12,6 +12,7 @@ import com.yahoo.bard.webservice.config.luthier.factories.StrictPhysicalTableFac
 import com.yahoo.bard.webservice.data.config.ConfigurationLoader;
 import com.yahoo.bard.webservice.data.config.LuthierResourceDictionaries;
 import com.yahoo.bard.webservice.data.config.ResourceDictionaries;
+import com.yahoo.bard.webservice.data.config.metric.makers.MetricMaker;
 import com.yahoo.bard.webservice.data.dimension.Dimension;
 import com.yahoo.bard.webservice.data.dimension.DimensionDictionary;
 import com.yahoo.bard.webservice.data.dimension.KeyValueStore;
@@ -26,13 +27,11 @@ import com.yahoo.bard.webservice.table.ConfigPhysicalTable;
 import com.yahoo.bard.webservice.table.LogicalTableDictionary;
 import com.yahoo.bard.webservice.table.PhysicalTableDictionary;
 
-import com.fasterxml.jackson.databind.node.ObjectNode;
-
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Supplier;
 
 /**
  * Dependency Injection container for Config Objects configured via Luthier.
@@ -40,46 +39,60 @@ import java.util.function.Supplier;
 public class LuthierIndustrialPark implements ConfigurationLoader {
 
     private final LuthierResourceDictionaries resourceDictionaries;
+    private final DataSourceMetadataService metadataService;
+
     private final FactoryPark<Dimension> dimensionFactoryPark;
     private final FactoryPark<SearchProvider> searchProviderFactoryPark;
-    private final FactoryPark<ConfigPhysicalTable> physicalTableFactoryPark;
     private final FactoryPark<KeyValueStore> keyValueStoreFactoryPark;
-    private final DataSourceMetadataService metadataService;
+
+    private final FactoryPark<MetricMaker> metricMakerFactoryPark;
+
+    private final FactoryPark<ConfigPhysicalTable> physicalTableFactoryPark;
 
     /**
      * Constructor.
      *
      * @param resourceDictionaries  The dictionaries to initialize the industrial park with
-     * @param dimensionFactories  The map of factories for creating dimensions from external config
-     * @param keyValueStoreFactories  The map of factories for creating keyValueStores from external config
-     * @param searchProviderFactories  The map of factories for creating searchProviders from external config
-     * @param physicalTableFactories  The map of factories for creating physicalTables from external config
+     * @param conceptFactoryMap  A collection of named factories, partitioned by concept types
      */
     protected LuthierIndustrialPark(
             LuthierResourceDictionaries resourceDictionaries,
-            Map<String, Factory<Dimension>> dimensionFactories,
-            Map<String, Factory<KeyValueStore>> keyValueStoreFactories,
-            Map<String, Factory<SearchProvider>> searchProviderFactories,
-            Map<String, Factory<ConfigPhysicalTable>> physicalTableFactories
+            Map<ConceptType<?>, Map<String, ? extends Factory<? extends Object>>> conceptFactoryMap
     ) {
+
         this.resourceDictionaries = resourceDictionaries;
-        Supplier<ObjectNode> dimensionConfig = new ResourceNodeSupplier("DimensionConfig.json");
-        Supplier<ObjectNode> keyValueStoreConfig = new ResourceNodeSupplier("KeyValueStoreConfig.json");
-        Supplier<ObjectNode> searchProviderConfig = new ResourceNodeSupplier("SearchProviderConfig.json");
-        Supplier<ObjectNode> physicalTableConfig = new ResourceNodeSupplier("PhysicalTableConfig.json");
-        // Supplier<ObjectNode> logicalTableConfig = new ResourceNodeSupplier("LogicalTableConfig.json");
-        this.dimensionFactoryPark = new FactoryPark<>(dimensionConfig, dimensionFactories);
-        this.keyValueStoreFactoryPark = new FactoryPark<>(keyValueStoreConfig, keyValueStoreFactories);
-        this.searchProviderFactoryPark = new FactoryPark<>(searchProviderConfig, searchProviderFactories);
-        this.physicalTableFactoryPark = new FactoryPark<>(physicalTableConfig, physicalTableFactories);
+
+        this.searchProviderFactoryPark = buildFactoryPark(ConceptType.SEARCH_PROVIDER, conceptFactoryMap);
+        this.keyValueStoreFactoryPark = buildFactoryPark(ConceptType.KEY_VALUE_STORE, conceptFactoryMap);
+        this.dimensionFactoryPark = buildFactoryPark(ConceptType.DIMENSION, conceptFactoryMap);
+
+        this.metricMakerFactoryPark =  buildFactoryPark(ConceptType.METRIC_MAKER, conceptFactoryMap);
+        this.physicalTableFactoryPark = buildFactoryPark(ConceptType.PHYSICAL_TABLE, conceptFactoryMap);
+
         this.metadataService = new DataSourceMetadataService();
+
     }
 
-/*
-    LogicalTable getLogicalTable(String tableName);
-    LogicalMetric getLogicalMetric(String metricName);
-    MetricMaker getMetricMaker(String makerName);
-*/
+    /**
+     * For a given collection of factories, build a single FactoryPark.
+     *
+     * @param concept  The concept of the factory map being created.
+     * @param conceptFactoryMap  A collection of named factories, partitioned by concept types
+     * @param <T> The type of the entity corresponding to this factory map.
+     *
+     * @return  A Factory Park defined for a given set of named factories.
+     */
+    private static <T> FactoryPark<T> buildFactoryPark(
+            ConceptType<T> concept,
+            Map<ConceptType<?>, Map<String, ? extends Factory<? extends Object>>> conceptFactoryMap
+    ) {
+        Map<String, Factory<T>> factories = (Map<String, Factory<T>>) conceptFactoryMap.get(concept);
+
+        return new FactoryPark<>(
+                new ResourceNodeSupplier(concept.getResourceName()),
+                factories
+        );
+    }
 
     /**
      * Retrieve or build a dimension.
@@ -98,17 +111,33 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
     }
 
     /**
-     * Retrieve or build a SearchProvider for a specific domain.
+     * Retrieve or build a Metric Maker.
+     *
+     * @param metricMakerName the name for the dimension to be provided.
+     *
+     * @return the dimension instance corresponding to this name.
+     */
+    public MetricMaker getMetricMaker(String metricMakerName) {
+        Map<String, MetricMaker> metricMakerDictionary = resourceDictionaries.getMetricMakerDictionary();
+        if (metricMakerDictionary.get(metricMakerName) == null) {
+            MetricMaker metricMaker = metricMakerFactoryPark.buildEntity(metricMakerName, this);
+            metricMakerDictionary.put(metricMakerName, metricMaker);
+        }
+        return metricMakerDictionary.get(metricMakerName);
+    }
+
+    /**
+     * Retrieve or build a SearchProvider.
      *
      * @param domain  a string that is associated with the space this provider
      * searches for. It will typically be the dimension name unless more than
      * one dimension shares the same SearchProvider.
      *
-     * @return  an instance of the SearchProvider that correspond to the domain
+     * @return an instance of the SearchProvider that correspond to the domain
      */
     public SearchProvider getSearchProvider(String domain) {
         Map<String, SearchProvider> searchProviderDictionary = resourceDictionaries.getSearchProviderDictionary();
-        if (! searchProviderDictionary.containsKey(domain)) {
+        if (!searchProviderDictionary.containsKey(domain)) {
             SearchProvider searchProvider = searchProviderFactoryPark.buildEntity(domain, this);
             searchProviderDictionary.put(domain, searchProvider);
         }
@@ -116,12 +145,12 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
     }
 
     /**
-     * Bare minimum.
+     * Retrieve or build a KeyValueStore.
      *
      * @param domain identifier of the keyValueStore
      *
      * @return the keyValueStore built according to the keyValueStore identifier
-     * @throws UnsupportedOperationException when passed in redisStore.
+     * @throws IllegalArgumentException when passed in redisStore.
      */
     public KeyValueStore getKeyValueStore(String domain) throws UnsupportedOperationException {
         Map<String, KeyValueStore> keyValueStoreDictionary = resourceDictionaries.getKeyValueStoreDictionary();
@@ -141,7 +170,7 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
      */
     public ConfigPhysicalTable getPhysicalTable(String tableName) {
         PhysicalTableDictionary physicalTableDictionary = resourceDictionaries.getPhysicalDictionary();
-        if (! physicalTableDictionary.containsKey(tableName)) {
+        if (!physicalTableDictionary.containsKey(tableName)) {
             ConfigPhysicalTable physicalTable = physicalTableFactoryPark.buildEntity(tableName, this);
             physicalTableDictionary.put(tableName, physicalTable);
         }
@@ -159,7 +188,7 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
      *
      * @return the LogicalMetric instance corresponding to this metricName.
      */
-    // TODO: to be finished in the metric PR.
+    // TODO: to be added after metric makers are working
     public LogicalMetric getMetric(String metricName) {
         return null;
     }
@@ -204,6 +233,7 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
         private Map<String, Factory<SearchProvider>> searchProviderFactories;
         private Map<String, Factory<KeyValueStore>> keyValueStoreFactories;
         private Map<String, Factory<ConfigPhysicalTable>> physicalTableFactories;
+        private Map<ConceptType<?>, Map<String, ? extends Factory<? extends Object>>> conceptFactoryMap;
 
         private final LuthierResourceDictionaries resourceDictionaries;
 
@@ -215,10 +245,11 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
          */
         public Builder(LuthierResourceDictionaries resourceDictionaries) {
             this.resourceDictionaries = resourceDictionaries;
-            dimensionFactories = getDefaultDimensionFactories();
-            keyValueStoreFactories = getDefaultKeyValueStoreFactories();
-            searchProviderFactories = getDefaultSearchProviderFactories();
-            physicalTableFactories = getDefaultPhysicalTableFactories();
+            conceptFactoryMap = new HashMap<>();
+            conceptFactoryMap.put(ConceptType.METRIC_MAKER, new HashMap<>());
+            conceptFactoryMap.put(ConceptType.DIMENSION, getDefaultDimensionFactories());
+            conceptFactoryMap.put(ConceptType.SEARCH_PROVIDER, getDefaultSearchProviderFactories());
+            conceptFactoryMap.put(ConceptType.PHYSICAL_TABLE, getDefaultPhysicalTableFactories());
         }
 
         /**
@@ -234,7 +265,7 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
         /**
          * Default dimension factories that currently lives in the code base.
          *
-         * @return  a LinkedHashMap of KeyValueStoreDimension to its factory
+         * @return a LinkedHashMap of KeyValueStoreDimension to its factory
          */
         private Map<String, Factory<Dimension>> getDefaultDimensionFactories() {
             Map<String, Factory<Dimension>> dimensionFactoryMap = new LinkedHashMap<>();
@@ -261,7 +292,7 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
         /**
          * Default searchProvider factories that currently lives in the code base.
          *
-         * @return  a LinkedHashMap of aliases of search provider type name to its factory
+         * @return a LinkedHashMap of aliases of search provider type name to its factory
          */
         private Map<String, Factory<SearchProvider>> getDefaultSearchProviderFactories() {
             Map<String, Factory<SearchProvider>> searchProviderFactoryMap = new LinkedHashMap<>();
@@ -294,7 +325,7 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
         /**
          * Default physicalTable factories that currently lives in the code base.
          *
-         * @return  a LinkedHashMap of physicalTable type name to its factory
+         * @return a LinkedHashMap of physicalTable type name to its factory
          */
         private Map<String, Factory<ConfigPhysicalTable>> getDefaultPhysicalTableFactories() {
             Map<String, Factory<ConfigPhysicalTable>> physicalTableFactoryMap = new LinkedHashMap<>();
@@ -308,33 +339,59 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
         }
 
         /**
-         * Registers named dimension factories with the Industrial Park Builder.
+         * Registers factories for a give concept.
          * <p>
-         * There should be one factory per type of dimension used in the config
+         * There should be one factory per construction pattern for a concept in the system.
          *
-         * @param factories  A mapping from a dimension type identifier used in the config
-         * to a factory that builds Dimensions of that type
+         * @param conceptType The configuration concept being configured (e.g. Dimension, Metric..)
+         * @param factories  A mapping from names of factories to a factory that builds instances of that type
+         * @param <T> The configuration entity produced by this set of collection of factories.
          *
          * @return the builder object
          */
-        public Builder withDimensionFactories(Map<String, Factory<Dimension>> factories) {
-            this.dimensionFactories = factories;
+        public <T> Builder withFactories(ConceptType<T> conceptType, Map<String, Factory<T>> factories) {
+            conceptFactoryMap.put(conceptType, factories);
             return this;
         }
 
         /**
-         * Registers a named dimension factory with the Industrial Park Builder.
+         * Registers factories for a give concept.
          * <p>
-         * There should be one factory per type of dimension used in the config
+         * There should be one factory per construction pattern for a concept in the system.
          *
-         * @param name  The identifier used in the configuration to identify the type of
-         * dimension built by this factory
-         * @param factory  A factory that builds Dimensions of the type named by {@code name}
+         * @param conceptType The configuration concept being configured (e.g. Dimension, Metric..)
+         * @param factories  A mapping from names of factories to a factory that builds instances of that type
+         * @param <T> The configuration entity produced by this set of collection of factories.
          *
          * @return the builder object
          */
-        public Builder withDimensionFactory(String name, Factory<Dimension> factory) {
-            dimensionFactories.put(name, factory);
+        @SuppressWarnings("unchecked")
+        public <T> Builder addFactories(ConceptType<T> conceptType, Map<String, Factory<T>> factories) {
+            Map<String, Factory<T>> factory = (Map<String, Factory<T>>) conceptFactoryMap.computeIfAbsent(
+                    conceptType,
+                    (ignore) -> new LinkedHashMap<>()
+            );
+            factory.putAll(factories);
+            return this;
+        }
+
+        /**
+         * Registers a named factory with the Industrial Park Builder.
+         * <p>
+         * There should be one factory per construction pattern for a concept in the system.
+         *
+         * @param conceptType  The configuration type for the entity being produced
+         * @param name  The identifier used in the configuration to identify the type of
+         * dimension built by this factory
+         * @param factory  A factory that builds Dimensions of the type named by {@code name}
+         * @param <T>  The configuration entity produced by this set of collection of factories
+         *
+         * @return the builder object
+         */
+        @SuppressWarnings("unchecked")
+        public <T> Builder addFactory(ConceptType<T> conceptType, String name, Factory<T> factory) {
+            Map<String, Factory<T>> conceptFactory = (Map<String, Factory<T>>) conceptFactoryMap.get(conceptType);
+            conceptFactory.put(name, factory);
             return this;
         }
 
@@ -404,14 +461,9 @@ public class LuthierIndustrialPark implements ConfigurationLoader {
          *
          * @return the LuthierIndustrialPark with the specified resourceDictionaries and factories
          */
+        @SuppressWarnings("unchecked")
         public LuthierIndustrialPark build() {
-            return new LuthierIndustrialPark(
-                    resourceDictionaries,
-                    new LinkedHashMap<>(dimensionFactories),
-                    new LinkedHashMap<>(keyValueStoreFactories),
-                    new LinkedHashMap<>(searchProviderFactories),
-                    new LinkedHashMap<>(physicalTableFactories)
-            );
+            return new LuthierIndustrialPark(resourceDictionaries, conceptFactoryMap);
         }
     }
 }

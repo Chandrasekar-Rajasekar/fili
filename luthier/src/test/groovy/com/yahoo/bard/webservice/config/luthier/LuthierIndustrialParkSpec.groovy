@@ -23,7 +23,7 @@ class LuthierIndustrialParkSpec extends Specification {
             Map<String, Factory<Dimension>> dimensionFactoriesMap = new HashMap<>()
             dimensionFactoriesMap.put("KeyValueStoreDimension", new KeyValueStoreDimensionFactory())
             industrialPark = new LuthierIndustrialPark.Builder(resourceDictionaries)
-                .withDimensionFactories(dimensionFactoriesMap)
+                .withFactories(ConceptType.DIMENSION, dimensionFactoriesMap)
                 .build()
         when:
             industrialPark.load()
